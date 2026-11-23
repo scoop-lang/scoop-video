@@ -1,19 +1,25 @@
-# Scoop UI 最小播放器
+# Scoop UI 的 Metal 采集
 
-在仓库根目录构建并打开随附的 4K60 测试片。也可以传入本地视频路径。本次验证使用带 BT.709 标记的 8-bit SDR、视频范围 NV12，支持居中或左侧色度采样。窗口保持视频宽高比，左下角的按钮和空格键可以暂停、继续，在片尾可以重播。普通播放保留音轨，采集模式静音。
+在仓库根目录运行采集工具。它以独立窗口挂载工作区的 `videoPlayer` 组件。也可以传入本地视频路径。本次验证使用带 BT.709 标记的 8-bit SDR、视频范围 NV12，支持居中或左侧色度采样。窗口保持视频宽高比，左下角的按钮和空格键可以暂停、继续，在片尾可以重播。普通播放保留音轨，采集模式静音。
 
 ```sh
 make ui
 ./build/scoop-video-ui artifacts/source-4k60.mp4
 ```
 
-构建使用 `~/.scoop` 的 `0.0.0-dev.20261123` 预编译库。每当 AVPlayer 交付新帧，bridge 从 `CVMetalTextureCache` 取得属于 UI 设备的两个 Metal 纹理，检查原始 IOSurface、平面索引、尺寸和像素格式。两个纹理共享一个 native owner，它保持 `CVPixelBuffer` 与两个 `CVMetalTexture` 存活到 Skia 的 release 回调。[原生平面与所有权](native/planes.m) · [AVPlayer 时钟与帧交付](native/player.m)
+构建使用 `~/.scoop` 的 `0.0.0-dev.20261123` 预编译库。每当 AVPlayer 交付新帧，bridge 从 `CVMetalTextureCache` 取得属于 UI 设备的两个 Metal 纹理，检查原始 IOSurface、平面索引、尺寸和像素格式。两个纹理共享一个 native owner，它保持 `CVPixelBuffer` 与两个 `CVMetalTexture` 存活到 Skia 的 release 回调。[原生平面与所有权](../scoop.ui.video/native/planes.m) · [AVPlayer 时钟与帧交付](../scoop.ui.video/native/player.m)
 
-Scoop 组件直接使用 `UiHost.attach → Element.scene → SceneContext.draw`。它从这块 Canvas 取得 `GpuDevice`，分别用 `R8` 和 `Rg8` 导入 Y、UV，把两个图像着色器绑定到 SkSL，按有限范围 BT.709 还原 RGB，并输出到 sRGB 目标。第二个 UI 绘制块叠加按钮和进度条。AVPlayer 的时间观察器只在有新帧或播放状态改变时通知 UI，暂停时保留最后的 shader。[UI 场景](src/main.scoop) · [双平面导入与着色器](src/video.scoop)
+Scoop 组件直接使用 `UiHost.attach → Element.scene → SceneContext.draw`。它从这块 Canvas 取得 `GpuDevice`，分别用 `R8` 和 `Rg8` 导入 Y、UV，把两个图像着色器绑定到 SkSL，按有限范围 BT.709 还原 RGB，并输出到 sRGB 目标。第二个 UI 绘制块叠加按钮和进度条。AVPlayer 的时间观察器只在有新帧或播放状态改变时通知 UI，暂停时保留最后的 shader。[UI 场景](../scoop.ui.video/src/view.scoop) · [双平面导入与着色器](../scoop.ui.video/src/planes.scoop)
 
-## 4K60 实测
+## 组件拆分后的 4K60 复测
 
-2026-11-24 在 Apple M4 Pro、macOS 27.2.1、Xcode/Instruments 27.2 上采集。输入是 10 秒的 H.264 High、3840×2160、60/1 fps 测试片，测量媒体时间为前 9 秒。AppleAVD 日志记录了 AVC 硬解和 `420v` 输出。采集模式使用固定大小的普通 Scoop 窗口，按屏幕缩放申请 3840×2160 backing。系统 trace 独立确认源和最终 drawable 都是 3840×2160。物理显示器为 2560×1600。[素材](../artifacts/source-4k60.mp4) · [解码器日志](../artifacts/ui/decoder.log)
+工作区的采集程序通过公开的 `videoPlayer(source)` 挂载组件，测量同一段 H.264 的前 9 秒。源和最终 drawable 都是 3840×2160。系统录制中，539 个不同的源帧对应 539 个 render encoder，每一个都读取该帧的 NV12 IOSurface 并写入它的 present drawable，GPU 通道只有 Vertex 和 Fragment。媒体时间 2.200 秒的源帧未提交，[2, 8) 秒内提交 359 帧，实测 59.87 fps。[Metal System Trace](../artifacts/workspace-ui/playback.trace) · [逐帧核对](../artifacts/workspace-ui/encoder-frames.csv)
+
+媒体时间 3.000 秒的单帧捕获含 Y、UV 双纹理采样和控件着色器。独立 CPU 检测覆盖 540 帧、1,080 个平面视图，视频像素读回和上传接口计数均为 0。额外 BGRA 转换 pass 为 0。唯一的 blit 仍是首个视频帧之前的 48 KiB 矩形索引缓冲。[单帧捕获](../artifacts/workspace-ui/frame.gputrace) · [采样着色器](../artifacts/workspace-ui/captured-fragment.metal) · [计数摘要](../artifacts/workspace-ui/summary.json) · [CPU 调用栈](../artifacts/workspace-ui/audit.log)
+
+## 拆分前的 4K60 实测
+
+以下数据来自拆分工作区前的提交 `ba18c11`。2026-11-24 在 Apple M4 Pro、macOS 27.2.1、Xcode/Instruments 27.2 上采集。输入是 10 秒的 H.264 High、3840×2160、60/1 fps 测试片，测量媒体时间为前 9 秒。AppleAVD 日志记录了 AVC 硬解和 `420v` 输出。采集模式使用固定大小的普通 Scoop 窗口，按屏幕缩放申请 3840×2160 backing。系统 trace 独立确认源和最终 drawable 都是 3840×2160。物理显示器为 2560×1600。[素材](../artifacts/source-4k60.mp4) · [解码器日志](../artifacts/ui/decoder.log)
 
 | 核对项 | 观测 |
 | --- | --- |

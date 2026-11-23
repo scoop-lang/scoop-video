@@ -1,19 +1,22 @@
 schema = 1
 
 [cone]
-group = "scoop.video"
-name = "scoop-video-ui"
-version = "0.1.0"
-kind = "executable"
+group = { workspace = true }
+name = "scoop.ui.video"
+version = { workspace = true }
+kind = "library"
 
 [dependencies]
 "scoop:scoop.core" = "0.1.0"
-"scoop:scoop.std" = "0.1.0"
 "scoop:scoop.platform" = "0.1.0"
 "scoop:scoop.graphics" = "0.1.0"
 "scoop:scoop.surface" = "0.1.0"
 "scoop:scoop.ui" = "0.1.0"
 "scoop:scoop.window" = "0.1.0"
+
+[test-dependencies]
+"scoop:scoop.std" = "0.1.0"
+"scoop:scoop.test" = "0.1.0"
 
 [native]
 objc_flags = ["-Wall", "-Wextra", "-Werror"]

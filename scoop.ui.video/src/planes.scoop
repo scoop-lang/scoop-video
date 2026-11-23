@@ -1,4 +1,4 @@
-package scoop.video
+package scoop.ui.video
 
 import scoop.graphics.*
 import scoop.graphics.native.*
@@ -19,6 +19,8 @@ internal struct Planes(
 internal fun openPlayer(
     device: Ptr<Unit>,
     queue: Ptr<Unit>,
+    path: Ptr<Byte>,
+    playing: Boolean,
     wake: FunPtr<(Ptr<Unit>) -> Int>,
     context: Ptr<Unit>
 ): Ptr<Unit>?
@@ -38,8 +40,11 @@ internal fun completeFrame(player: Ptr<Unit>, accepted: Boolean)
 @Extern(name = "sv_state")
 internal fun playerState(player: Ptr<Unit>): Int
 
-@Extern(name = "sv_toggle")
-internal fun togglePlayer(player: Ptr<Unit>)
+@Extern(name = "sv_set_playing")
+internal fun setPlaying(player: Ptr<Unit>, playing: Boolean)
+
+@Extern(name = "sv_error")
+internal fun playerError(player: Ptr<Unit>): Ptr<Int8>?
 
 @Extern(name = "sv_progress")
 internal fun playerProgress(player: Ptr<Unit>): Double

@@ -1,0 +1,150 @@
+package scoop.ui.video
+
+import scoop.compiler.includeBytes
+import scoop.platform.fs.*
+import scoop.platform.time.MonotonicTimeSource
+import scoop.test.*
+import scoop.time.Duration
+import scoop.ui.*
+import scoop.window.*
+
+@Test
+private class VideoViewTest {
+    @Test
+    fun pausedFrameControlsReplayAndSourceReplacement() {
+        val directory = createTempDirectory(prefix = "scoop-video-")
+        try {
+            val path = directory.resolve(Path.fromString("本地 video.mp4"))
+            val other = directory.resolve(Path.fromString("second.mp4"))
+            val bytes = includeBytes("data/video.mp4")
+            path.writeAllBytes(bytes)
+            other.writeAllBytes(bytes)
+            val session = VideoExercise(
+                path,
+                other,
+                directory.resolve(Path.fromString("missing.mp4"))
+            )
+            UiHost(
+                onRootError = { _, error ->
+                    session.failure = Some(error)
+                    session.owner!!.requestExit()
+                }
+            ) { host, active, event ->
+                when (event) {
+                    case Resumed -> {
+                        session.owner = Some(active)
+                        active
+                            .setControlFlow(
+                                ControlFlow
+                                    .WaitUntil(MonotonicTimeSource.now() + Duration.seconds(12L))
+                            )
+                        val window = active
+                            .createWindow(windowAttributes { title = "Video component test" })
+                        host.attach(window, { mount -> ExerciseView(session, mount) })
+                    }
+
+                    case NewEvents(StartCause.Deadline) -> active.requestExit()
+                    else -> {}
+                }
+            }
+                .use { host -> Application().run(host) }
+            when (session.failure) {
+                case Some(val cause) -> throw cause;
+                case None -> {}
+            }
+            assertTrue(
+                session.finished,
+                Some("Timed out waiting for playback, replay or source replacement")
+            )
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+}
+
+private class VideoExercise(path: Path, val other: Path, val missing: Path) {
+    val controller = VideoController(path, autoPlay = false)
+    val replacement = state<Path?>(None)
+    var owner: ActiveApplication? = None
+    var failure: Throwable? = None
+    var finished = false
+}
+
+private class ExerciseView(private val trial: VideoExercise, scope: ComponentScope) :
+    Component(scope) {
+    private val player = trial.controller
+    private var phase = 0
+    private var ends = 0
+    private var pausedAt = 0.0
+    private val timer = scope.createDeadline { step() }
+
+    public override fun onMount() {
+        after(40L)
+    }
+    private fun after(ms: Long) {
+        timer.schedule(MonotonicTimeSource.now() + Duration.milliseconds(ms))
+    }
+    private fun step() {
+        when (phase) {
+            case 0 -> {
+                val p = player.native
+                @Unsafe {
+                    if (p != None && framePlanes(p!!).y.width == 160) {
+                        assertEquals(VideoPlaybackState.Paused, player.playbackState)
+                        player.play()
+                        player.play()
+                        phase = 1
+                    }
+                }
+            }
+
+            case 1 ->
+                if (player.progress >= 0.2) {
+                    player.pause()
+                    player.pause()
+                    pausedAt = player.progress
+                    phase = 2
+                    after(180L)
+                    return
+                }
+
+            case 2 -> {
+                assertEquals(VideoPlaybackState.Paused, player.playbackState)
+                assertEquals(pausedAt, player.progress)
+                player.toggle()
+                phase = 3
+            }
+
+            else -> {}
+        }
+        after(40L)
+    }
+    private fun ended() {
+        assertEquals(VideoPlaybackState.Ended, player.playbackState)
+        assertEquals(1.0, player.progress)
+        ends += 1
+        if (ends == 1) player.play() else trial.replacement.value = Some(trial.other)
+    }
+
+    public override fun render(): View {
+        val view = this
+        val path = trial.replacement.value
+        if (path != None) {
+            return videoPlayer(path!!) {
+                onEnded = { view.trial.replacement.value = Some(view.trial.missing) }
+                onError = { message ->
+                    assertEquals(view.trial.missing, path!!)
+                    assertTrue(message.byteLength > 0L)
+                    assertTrue(view.player.native == None)
+                    assertEquals(2, view.ends)
+                    view.trial.finished = true
+                    view.scope.application.requestExit()
+                }
+            }
+        }
+        return videoPlayer(player) {
+            showControls = false;
+            onEnded = { view.ended() }
+        }
+    }
+}

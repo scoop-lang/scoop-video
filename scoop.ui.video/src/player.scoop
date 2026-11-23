@@ -1,0 +1,118 @@
+package scoop.ui.video
+
+import scoop.platform.fs.Path
+import scoop.ui.*
+
+/** Playback of a single local source on the UI thread. */
+public enum VideoPlaybackState {
+    Playing, Paused, Ended, Failed
+}
+
+/** Keep the controller in the parent when providing custom controls. Each mount starts at the beginning. */
+public class VideoController public constructor(public val source: Path, autoPlay: Boolean = true) {
+    private var wantsPlay = autoPlay
+    private var attached = false
+    internal var native: Ptr<Unit>? = None
+    internal var failure: String? = None
+    internal val startPlaying: Boolean get() = wantsPlay
+
+    /** Before the first paint this returns the requested initial state. */
+    public val playbackState: VideoPlaybackState
+        get() {
+            if (failure != None) return VideoPlaybackState.Failed
+            val p = native ?:
+                return if (wantsPlay) VideoPlaybackState.Playing else VideoPlaybackState.Paused
+            @Unsafe {
+                return when (playerState(p)) {
+                    case 0 -> VideoPlaybackState.Paused
+                    case 1 -> VideoPlaybackState.Playing
+                    case 2 -> VideoPlaybackState.Ended
+                    else -> VideoPlaybackState.Failed
+                }
+            }
+        }
+
+    /** Current fraction from zero to one. Returns zero before the first frame. */
+    public val progress: Double
+        get() {
+            val p = native ?: return 0.0
+            @Unsafe {
+                return playerProgress(p)
+            }
+        }
+
+    /** Starts or resumes playback. At the end of the file, plays again from the beginning. */
+    public fun play() {
+        setPlayback(true)
+    }
+    public fun pause() {
+        setPlayback(false)
+    }
+    public fun toggle() {
+        setPlayback(playbackState != VideoPlaybackState.Playing)
+    }
+
+    private fun setPlayback(playing: Boolean) {
+        wantsPlay = playing
+        val p = native ?: return
+        @Unsafe {
+            setPlaying(p, playing)
+        }
+    }
+
+    internal fun attach() {
+        if (attached)
+            throw IllegalStateException(
+                Some("A VideoController can be mounted in one videoPlayer at a time")
+            )
+        attached = true
+        failure = None
+    }
+    internal fun detach() {
+        val p = native
+        native = None
+        failure = None
+        attached = false
+        @Unsafe {
+            if (p != None) closePlayer(p!!)
+        }
+    }
+}
+
+/** Presentation and notifications for one videoPlayer view. */
+public class VideoPlayerOptions public constructor() {
+    public var showControls: Boolean = true
+    /** Requests initial keyboard focus for the play/pause button. */
+    public var autoFocus: Boolean = false
+    public var onEnded: () -> Unit = {}
+    public var onError: (String) -> Unit = { message -> throw IllegalStateException(Some(message)) }
+}
+
+/** Plays a local video as soon as its view is mounted. Re-rendering with the same path preserves playback. */
+public fun videoPlayer(source: Path, configure: VideoPlayerOptions.() -> Unit = {}): View =
+    playerView(source, None, configure)
+
+/** Embeds a caller-owned controller. The view releases the native player on unmount. */
+public fun videoPlayer(
+    controller: VideoController,
+    configure: VideoPlayerOptions.() -> Unit = {}
+): View = playerView(controller.source, Some(controller), configure)
+
+private fun playerView(
+    source: Path,
+    controller: VideoController?,
+    configure: VideoPlayerOptions.() -> Unit
+): View {
+    val options = VideoPlayerOptions()
+    options.configure()
+    return element(
+        VideoInput(source, controller, options),
+        { props, scope -> VideoView(props, scope) }
+    )
+}
+
+internal struct VideoInput(
+    val source: Path,
+    val controller: VideoController?,
+    val options: VideoPlayerOptions
+)

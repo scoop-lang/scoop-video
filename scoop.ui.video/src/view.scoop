@@ -1,0 +1,222 @@
+package scoop.ui.video
+
+import scoop.graphics.*
+import scoop.graphics.native.*
+import scoop.platform.fs.withNativePath
+import scoop.surface.*
+import scoop.ui.*
+
+internal class VideoView(private val props: Props<VideoInput>, scope: ComponentScope) :
+    Element<Unit>(scope) {
+    private var model = props.value.controller ?: VideoController(props.value.source)
+    private var attached = false
+    private var supplied = props.value.controller
+    private var device: GpuDevice? = None
+    private var notify: ForeignCallback<(Ptr<Unit>) -> Int>? = None
+    private var shader: Shader? = None
+    private var imageSize = Size(1.0, 1.0)
+    private val program = scope.resource { ShaderProgram.compile(nv12Program) }
+    private val controls = PlaybackControls(scope, { model.toggle() })
+    private val white = Paint(Color.White, antiAlias = false)
+    private val black = Paint(Color.Black, antiAlias = false)
+    private var reportedEnd = false
+    private var reportedError = false
+
+    public override fun onMount() {
+        model.attach()
+        attached = true
+        @Unsafe {
+            notify = Some(
+                foreignCallback<(Ptr<Unit>) -> Int>({ wake() }, 0, ForeignCallbackMode.Reusable)
+            )
+        }
+        val options = props.value.options
+        controls.enable(options.showControls, options.autoFocus)
+    }
+
+    public override fun update(): UiInvalidation {
+        val input = props.value
+        val replace = when ((supplied, input.controller)) {
+            case(Some(val before), Some(val after)) -> before !== after
+            case(None, None) -> input.source != model.source
+            else -> true
+        }
+        if (replace) {
+            val next = input.controller ?: VideoController(input.source)
+            next.attach()
+            reset()
+            model = next
+            attached = true
+            supplied = input.controller
+        }
+        controls.enable(input.options.showControls, false)
+        return UiInvalidation.Scene
+    }
+
+    private fun reset() {
+        if (attached) model.detach()
+        attached = false
+        shader?.close()
+        shader = None
+        reportedEnd = false
+        reportedError = false
+    }
+
+    public override fun onUnmount() {
+        try {
+            reset()
+        } finally {
+            @Unsafe {
+                when (notify) {
+                    case Some(val callback) -> releaseForeignCallback(callback)
+                    case None -> {}
+                }
+            }
+            notify = None
+            device?.close()
+        }
+    }
+
+    private fun wake(): Int {
+        if (!scope.isMounted) return 0
+        scope
+            .dispatch {
+                scope.requestFrame()
+                val current = model
+                if (current.playbackState != VideoPlaybackState.Ended)
+                    reportedEnd = false
+                else if (!reportedEnd) {
+                    reportedEnd = true
+                    deliver(current) { options ->
+                        if (current.playbackState == VideoPlaybackState.Ended) options.onEnded()
+                    }
+                }
+            }
+        return 1
+    }
+
+    // A client callback can change UI state or replace this player. Deliver after the
+    // native callback or frame submission has returned, only to the same mounted source.
+    private fun deliver(current: VideoController, action: (VideoPlayerOptions) -> Unit) {
+        scope
+            .application
+            .proxy()
+            .post { _ ->
+                if (scope.isMounted && model === current)
+                    scope.dispatch { action(props.value.options) }
+            }
+    }
+
+    @Unsafe
+    private fun open(canvas: Canvas): Ptr<Unit>? {
+        val gpu = device ?:
+            canvas.gpuDevice() ?:
+            throw GraphicsException("The video Canvas requires Metal")
+        device = Some(gpu)
+        val callback = notify!!
+        val p = gpu
+            .withNative { backend ->
+                @Unsafe {
+                    return@withNative when (backend) {
+                        case Metal(val d, val q) ->
+                            model
+                                .source
+                                .withNativePath { path ->
+                                    @Unsafe {
+                                        return@withNativePath openPlayer(
+                                            d,
+                                            q,
+                                            path,
+                                            model.startPlaying,
+                                            callback.function,
+                                            callback.context
+                                        )
+                                    }
+                                }
+                        else -> None
+                    }
+                }
+            }
+        if (p == None) model.failure = Some("Could not open the video on the Metal device")
+        model.native = p
+        return p
+    }
+
+    @Unsafe
+    private fun paintVideo(canvas: Canvas, extent: Size) {
+        canvas.drawRect(Rect(0.0, 0.0, extent.width, extent.height), black)
+        if (model.failure != None) return
+        val p = model.native ?: open(canvas) ?: return
+        val changed = beginFrame(p)
+        if (changed < 0) {
+            val message = playerError(p)
+            model.failure = Some(
+                if (message == None)
+                    "Could not obtain an NV12 frame"
+                else
+                    String.fromCString(message!!)
+            )
+            return
+        }
+        if (changed > 0) {
+            val planes = framePlanes(p)
+            val next = bindFrame(device!!, program, planes)
+            shader?.close()
+            shader = Some(next)
+            imageSize = Size(planes.y.width.toDouble(), planes.y.height.toDouble())
+        }
+        val video = shader ?: return
+        val sx = extent.width / imageSize.width
+        val sy = extent.height / imageSize.height
+        val scale = if (sx < sy) sx else sy
+        canvas
+            .translate(
+                (extent.width - imageSize.width * scale) / 2.0,
+                (extent.height - imageSize.height * scale) / 2.0
+            )
+        canvas.scale(scale, scale)
+        canvas.drawRect(Rect(0.0, 0.0, imageSize.width, imageSize.height), white, Some(video))
+    }
+
+    public override fun measure(context: MeasureContext, constraints: Constraints): LayoutResult<
+        Unit
+    > = LayoutResult(LayoutMetrics(constraints.constrain(Size(960.0, 540.0))), Unit)
+
+    public override fun scene(context: SceneContext, measured: Unit) {
+        val extent = context.size
+        context
+            .draw { paint ->
+                @Unsafe {
+                    paintVideo(paint.canvas, extent)
+                }
+            }
+        if (props.value.options.showControls) controls.draw(context, model)
+        val drawn = model
+        context
+            .onFrameComplete { completion ->
+                if (model === drawn) {
+                    @Unsafe {
+                        val p = drawn.native
+                        if (p != None)
+                            completeFrame(p!!, completion.submission == FrameSubmission.Accepted)
+                        when (notify) {
+                            case Some(val callback) -> {
+                                val problem = foreignCallbackFailure(callback)
+                                when (problem) {
+                                    case Some(val cause) -> throw cause;
+                                    case None -> {}
+                                }
+                            }
+
+                            case None -> {}
+                        }
+                    }
+                    val error = drawn.failure
+                    if (error != None && !reportedError) {
+                        reportedError = true
+                        deliver(drawn) { options -> options.onError(error!!) }
+                    }
+                }
+            }
+    }
+}

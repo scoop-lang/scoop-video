@@ -1,0 +1,60 @@
+package scoop.ui.video
+
+import scoop.graphics.*
+import scoop.surface.*
+import scoop.ui.*
+
+internal class PlaybackControls(scope: ComponentScope, toggle: () -> Unit) {
+    private val button = scope.createArea(focusable = true)
+    private val focus = scope.focusTarget(button)
+    private val play = scope
+        .resource {
+            path {
+                moveTo(Point(0.0, 0.0))
+                lineTo(Point(0.0, 18.0))
+                lineTo(Point(15.0, 9.0))
+                closeContour()
+            }
+        }
+    private val white = Paint(Color.White, antiAlias = false)
+    private val background = Paint(Color(0.04, 0.07, 0.10, 0.85), antiAlias = false)
+    private val track = Paint(Color(0.1, 0.12, 0.14, 0.8), antiAlias = false)
+    init {
+        scope.press(button) { toggle() }
+    }
+
+    fun enable(visible: Boolean, autoFocus: Boolean) {
+        button.focusable = visible
+        button.scope.enabled = visible
+        if (visible && autoFocus) focus.handle.requestFocus()
+    }
+
+    fun draw(context: SceneContext, model: VideoController) {
+        val size = context.size
+        if (size.width < 62.0 || size.height < 62.0) return
+        val bounds = Rect(18.0, size.height - 62.0, 44.0, 44.0)
+        context.place(button, bounds)
+        context
+            .draw { paint ->
+                val canvas = paint.canvas
+                canvas.drawRect(bounds, background)
+                val x = bounds.x + 14.0
+                val y = bounds.y + 13.0
+                if (model.playbackState == VideoPlaybackState.Playing) {
+                    canvas.drawRect(Rect(x, y, 5.0, 18.0), white)
+                    canvas.drawRect(Rect(x + 10.0, y, 5.0, 18.0), white)
+                } else {
+                    canvas
+                        .withState { child ->
+                            child.translate(x, y)
+                            child.drawPath(play, white)
+                        }
+                }
+                val width = size.width - 96.0
+                if (width > 0.0) {
+                    canvas.drawRect(Rect(76.0, bounds.y + 20.0, width, 4.0), track)
+                    canvas.drawRect(Rect(76.0, bounds.y + 20.0, width * model.progress, 4.0), white)
+                }
+            }
+    }
+}

@@ -95,7 +95,7 @@ def check_playback(folder):
     steady = []
     startup_encoders = []
     startup_frames = 0
-    render_channels = {"Vertex", "Fragment"}
+    video_channel_sets = Counter()
     i = 0
     # Surface flushes the canvas before creating its present command buffer. The
     # CPU creation timestamps delimit frames even with several GPU frames in flight.
@@ -153,10 +153,14 @@ def check_playback(folder):
             and target_id == f.get("drawable_iosurface", target_id),
             f"NV12/drawable identity mismatch at PTS {tick}",
         )
+        # Some draws have a fragment interval without a separate vertex interval.
+        # Check the submitted encoder and both surface accesses above in every case.
+        stages = channels[e["encoder-id"]]
         require(
-            channels[e["encoder-id"]] == render_channels,
-            f"Unexpected GPU channels in the video draw at PTS {tick}",
+            "Fragment" in stages and stages <= {"Vertex", "Fragment"},
+            f"Unexpected GPU channels {stages} in the video draw at PTS {tick}",
         )
+        video_channel_sets[tuple(sorted(stages))] += 1
         ticks.append(int(tick))
         if 120 <= tick < 480:
             steady.append(float(f["host_s"]))
@@ -199,7 +203,10 @@ def check_playback(folder):
         "steady_frames_2_to_8_s": len(steady),
         "steady_submit_fps": round((len(steady) - 1) / (steady[-1] - steady[0]), 3),
         "render_encoders": len(joined),
-        "gpu_channels": sorted(render_channels),
+        "gpu_channels": sorted(set().union(*video_channel_sets)),
+        "video_gpu_interval_sets": {
+            " + ".join(stages): count for stages, count in video_channel_sets.items()
+        },
         "all_encoder_labels": dict(Counter(e["encoder-label"] for e in encoders)),
         "startup_frames": startup_frames,
         "before_first_video_frame": startup_encoders,

@@ -1,0 +1,20 @@
+package scoop.ui.video
+
+import scoop.platform.fs.Path
+import scoop.test.*
+
+@Test
+private class VideoControllerTest {
+    @Test
+    fun playbackRequestsBeforeMount() {
+        val player = VideoController(Path.fromString("video.mp4"), autoPlay = false)
+        assertEquals(0.0, player.progress)
+        assertEquals(VideoPlaybackState.Paused, player.playbackState)
+        player.play()
+        player.play()
+        assertEquals(VideoPlaybackState.Playing, player.playbackState)
+        player.toggle()
+        player.pause()
+        assertEquals(VideoPlaybackState.Paused, player.playbackState)
+    }
+}

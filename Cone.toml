@@ -1,0 +1,12 @@
+schema = 1
+
+[workspace]
+members = ["scoop.ui.video", "demo", "probes/ui"]
+default-members = ["demo"]
+
+[workspace.cone]
+group = "scoop"
+version = "0.1.0"
+
+[workspace.dependencies]
+"scoop:scoop.ui.video" = { path = "scoop.ui.video", version = "0.1.0" }

@@ -1,0 +1,72 @@
+package scoop.video.demo
+
+import scoop.platform.env.arguments
+import scoop.platform.fs.Path
+import scoop.ui.*
+import scoop.ui.component.*
+import scoop.ui.style.*
+import scoop.ui.style.shadcn.shadcnTheme
+import scoop.ui.video.*
+import scoop.window.*
+
+fun main() {
+    val args = arguments()
+    if (args.size > 2L) throw IllegalArgumentException(Some("Usage: video-demo [video.mp4]"))
+    val initial = if (args.size == 2L) Some(Path.fromOsString(args[1L])) else None
+    context(ThemeSource(shadcnTheme())) {
+        runUiApplication("Scoop Video", { scope -> Demo(initial, scope) })
+    }
+}
+
+private class Demo(initial: Path?, scope: ComponentScope) : Component(scope) {
+    private val source = state(initial)
+    private val error = state<String?>(None)
+    private val files = scope.fileDialogController()
+
+    private fun open() {
+        files
+            .openFile(
+                DialogTarget.Owner(scope.nativeWindow),
+                { result ->
+                    when (result) {
+                        case Accepted(val path) -> {
+                            error.value = None;
+                            source.value = Some(path)
+                        }
+
+                        case Failed(val cause) -> error.value = Some(cause.message ?: "无法打开文件")
+                        case Cancelled(_) -> {}
+                    }
+                }
+            )
+    }
+
+    public override fun render(): View {
+        val demo = this
+        val path = source.value
+        val message = error.value
+        return column {
+            alignment = CrossAlignment.Stretch
+            row {
+                padding = Insets(10.0, 6.0, 10.0, 6.0)
+                spacing = 10.0
+                alignment = CrossAlignment.Center
+                button("打开视频…", { demo.open() }) { enabled = !demo.files.isPending }
+                if (message != None)
+                    label(message!!)
+                else if (path != None) label(path!!.fileName?.decodeUtf8Lossy() ?: path!!.display())
+            }
+            if (path != None && message == None) {
+                item(
+                    videoPlayer(path!!) {
+                        autoFocus = true
+                        onError = { reason -> demo.error.value = Some(reason) }
+                    }
+                ) {
+                    grow = 1.0;
+                    basis = FlexBasis.Fixed(0.0)
+                }
+            }
+        }
+    }
+}

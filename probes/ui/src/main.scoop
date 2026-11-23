@@ -1,0 +1,71 @@
+package scoop.video.probe
+
+import scoop.platform.fs.Path
+import scoop.platform.env.arguments
+import scoop.surface.configureFpsReportingFromEnvironment
+import scoop.ui.*
+import scoop.ui.video.*
+import scoop.window.*
+
+@Extern(name = "sv_enable_ui_recording")
+private fun enableRecording(): Boolean
+
+private class Probe(
+    private val source: Path,
+    private val measuring: Boolean,
+    scope: ComponentScope
+) : Component(scope) {
+    public override fun render(): View = videoPlayer(source) {
+        autoFocus = true
+        onEnded = { if (this @Probe.measuring) this @Probe.scope.application.requestExit() }
+    }
+}
+
+fun main() {
+    val args = arguments()
+    if (args.size > 4L)
+        throw IllegalArgumentException(
+            Some("Usage: scoop-video-ui [video.mp4 [frames.csv [frame.gputrace]]]")
+        )
+    val source = if (args.size > 1L)
+        Path.fromOsString(args[1L])
+    else
+        Path.fromString("artifacts/source-4k60.mp4")
+    val measuring = args.size >= 3L
+    @Unsafe {
+        if (measuring && !enableRecording())
+            throw IllegalStateException(Some("Could not start the UI recording"))
+    }
+    configureFpsReportingFromEnvironment()
+    val app = Application(applicationOptions { lastWindowPolicy = LastWindowPolicy.Exit })
+    UiHost(onRootError = { _, cause -> throw cause }) { host, active, event ->
+        when (event) {
+            case Resumed -> {
+                val scale = active.primaryMonitor()?.scaleFactor ?: 1.0
+                val window = active
+                    .createWindow(
+                        windowAttributes {
+                            title = "Scoop Video"
+                            resizable = !measuring
+                            size = if (measuring)
+                                LogicalSize(3840.0 / scale, 2160.0 / scale)
+                            else
+                                LogicalSize(960.0, 540.0)
+                        }
+                    )
+                if (measuring) {
+                    val pixels = window.metrics!!.physicalSize
+                    if (pixels.width != 3840 || pixels.height != 2160)
+                        throw IllegalStateException(
+                            Some("The measurement requires a 3840x2160 window backing")
+                        )
+                }
+                host.attach(window, { mount -> Probe(source, measuring, mount) })
+            }
+
+            case Window(_, WindowEvent.CloseRequested) -> active.requestExit()
+            else -> {}
+        }
+    }
+        .use { host -> app.run(host) }
+}

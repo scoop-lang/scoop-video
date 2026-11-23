@@ -11,12 +11,12 @@ all: build/nv12-probe
 .PHONY: ui
 ui:
 	@mkdir -p build
-	scoop build ui --release --keep-symbols --target-dir build/ui-target -o build/scoop-video-ui
+	scoop build -p scoop:scoop-video-ui --release --keep-symbols -o build/scoop-video-ui
 
-build/nv12-probe: src/main.mm src/Renderer.mm src/Renderer.h $(SKIA_LIB)
+build/nv12-probe: probes/skia/main.mm probes/skia/Renderer.mm probes/skia/Renderer.h $(SKIA_LIB)
 	@test -f "$(SKIA_HEADERS)/include/gpu/ganesh/SkImageGanesh.h" || { echo "Set SKIA_HEADERS to the matching Skia header root"; exit 1; }
 	mkdir -p build
-	xcrun clang++ $(FLAGS) -I"$(SKIA_HEADERS)" src/main.mm src/Renderer.mm "$(SKIA_LIB)" $(FRAMEWORKS) -o $@
+	xcrun clang++ $(FLAGS) -I"$(SKIA_HEADERS)" probes/skia/main.mm probes/skia/Renderer.mm "$(SKIA_LIB)" $(FRAMEWORKS) -o $@
 
 .PHONY: audit
 audit: build/cpu-access.dylib build/audit-control
