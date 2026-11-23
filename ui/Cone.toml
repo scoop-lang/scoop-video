@@ -1,0 +1,33 @@
+schema = 1
+
+[cone]
+group = "scoop.video"
+name = "scoop-video-ui"
+version = "0.1.0"
+kind = "executable"
+
+[dependencies]
+"scoop:scoop.core" = "0.1.0"
+"scoop:scoop.std" = "0.1.0"
+"scoop:scoop.platform" = "0.1.0"
+"scoop:scoop.graphics" = "0.1.0"
+"scoop:scoop.surface" = "0.1.0"
+"scoop:scoop.ui" = "0.1.0"
+"scoop:scoop.window" = "0.1.0"
+
+[native]
+objc_flags = ["-Wall", "-Wextra", "-Werror"]
+
+[[native.sources]]
+path = "native/player.m"
+[[native.sources]]
+path = "native/planes.m"
+[[native.libraries]]
+name = "AVFoundation"
+kind = "framework"
+[[native.libraries]]
+name = "CoreMedia"
+kind = "framework"
+[[native.libraries]]
+name = "CoreVideo"
+kind = "framework"

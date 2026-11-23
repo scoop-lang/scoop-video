@@ -1,0 +1,106 @@
+package scoop.video
+
+import scoop.graphics.*
+import scoop.graphics.native.*
+
+@CLayout
+internal struct Plane(val texture: Ptr<Unit>, val width: Int, val height: Int, val format: ULong)
+
+@CLayout
+internal struct Planes(
+    val y: Plane,
+    val uv: Plane,
+    val owner: NativeGpuImageOwner,
+    val chromaX: Float,
+    val chromaY: Float
+)
+
+@Extern(name = "sv_open")
+internal fun openPlayer(
+    device: Ptr<Unit>,
+    queue: Ptr<Unit>,
+    wake: FunPtr<(Ptr<Unit>) -> Int>,
+    context: Ptr<Unit>
+): Ptr<Unit>?
+
+@Extern(name = "sv_close")
+internal fun closePlayer(player: Ptr<Unit>)
+
+@Extern(name = "sv_begin")
+internal fun beginFrame(player: Ptr<Unit>): Int
+
+@Extern(name = "sv_planes")
+internal fun framePlanes(player: Ptr<Unit>): Planes
+
+@Extern(name = "sv_complete")
+internal fun completeFrame(player: Ptr<Unit>, accepted: Boolean)
+
+@Extern(name = "sv_state")
+internal fun playerState(player: Ptr<Unit>): Int
+
+@Extern(name = "sv_toggle")
+internal fun togglePlayer(player: Ptr<Unit>)
+
+@Extern(name = "sv_progress")
+internal fun playerProgress(player: Ptr<Unit>): Double
+
+// The R8/RG8 child images and the drawable have matching sRGB tags. Their
+// samples are NV12 code values; do the video-range and transfer transforms once.
+internal val nv12Program = """
+uniform shader luma;
+uniform shader chroma;
+uniform float2 chromaOffset;
+float encodeSRGB(float v) {
+    float linear = v < 0.081 ? v / 4.5 : pow((v + 0.099) / 1.099, 1.0 / 0.45);
+    return linear <= 0.0031308 ? 12.92 * linear : 1.055 * pow(linear, 1.0 / 2.4) - 0.055;
+}
+half4 main(float2 p) {
+    float y = (luma.eval(p).r * 255.0 - 16.0) / 219.0;
+    float2 cbcr = (chroma.eval(p * 0.5 + chromaOffset).rg * 255.0 - 128.0) / 224.0;
+    float3 rgb = clamp(float3(y + 1.5748 * cbcr.y,
+                              y - 0.187324 * cbcr.x - 0.468124 * cbcr.y,
+                              y + 1.8556 * cbcr.x), 0.0, 1.0);
+    return half4(encodeSRGB(rgb.r), encodeSRGB(rgb.g), encodeSRGB(rgb.b), 1);
+}
+"""
+
+@Unsafe
+private fun GpuDevice.importPlane(
+    plane: Plane,
+    layout: GpuPixelLayout,
+    owner: NativeGpuImageOwner
+): Image = importImage(
+    NativeGpuTexture.Metal(plane.texture), plane.width, plane.height,
+    NativeGpuFormat.Metal(plane.format), layout, owner, alpha = GpuImageAlpha.Opaque
+)
+
+@Unsafe
+internal fun bindFrame(device: GpuDevice, program: ShaderProgram, planes: Planes): Shader {
+    return device
+        .importPlane(planes.y, GpuPixelLayout.R8, planes.owner)
+        .use { y ->
+            @Unsafe {
+                return@use device
+                    .importPlane(planes.uv, GpuPixelLayout.Rg8, planes.owner)
+                    .use { uv ->
+                        y
+                            .toShader()
+                            .use { yChild ->
+                                uv
+                                    .toShader()
+                                    .use { uvChild ->
+                                        program
+                                            .makeShader {
+                                                setChild("luma", yChild)
+                                                setChild("chroma", uvChild)
+                                                setFloats(
+                                                    "chromaOffset",
+                                                    [planes.chromaX, planes.chromaY]
+                                                )
+                                            }
+                                    }
+                            }
+                    }
+            }
+        }
+}

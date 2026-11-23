@@ -1,0 +1,245 @@
+package scoop.video
+
+import scoop.graphics.*
+import scoop.graphics.native.*
+import scoop.platform.env.arguments
+import scoop.surface.*
+import scoop.ui.*
+import scoop.window.*
+
+private class Player(private val probe: Boolean, scope: ComponentScope) : Component(scope) {
+    public override fun render(): View = element(
+        probe,
+        { props, mount -> VideoView(props.value, mount) }
+    )
+}
+
+private class VideoView(private val probe: Boolean, scope: ComponentScope) : Element<Unit>(scope) {
+    private var device: GpuDevice? = None
+    private var player: Ptr<Unit>? = None
+    private var notify: ForeignCallback<(Ptr<Unit>) -> Int>? = None
+    private var shader: Shader? = None
+    private var imageSize = Size(1.0, 1.0)
+    private var program: ShaderProgram? = None
+    private var button: InputArea? = None
+    private var triangle: Path? = None
+    private val white = Paint(Color.White, antiAlias = false)
+
+    public override fun onMount() {
+        program = Some(scope.resource { ShaderProgram.compile(nv12Program) })
+        triangle = Some(
+            scope
+                .resource {
+                    path {
+                        moveTo(Point(0.0, 0.0))
+                        lineTo(Point(0.0, 18.0))
+                        lineTo(Point(15.0, 9.0))
+                        closeContour()
+                    }
+                }
+        )
+        button = Some(scope.createArea(focusable = true))
+        scope.press(button!!) { toggle() }
+        scope.focusTarget(button!!).handle.requestFocus()
+    }
+
+    private fun toggle() {
+        val p = player ?: return
+        @Unsafe {
+            togglePlayer(p)
+        }
+    }
+
+    private fun wake(): Int {
+        if (!scope.isMounted) return 0
+        scope
+            .dispatch {
+                val p = player
+                @Unsafe {
+                    if (p != None && probe && playerState(p!!) == 2)
+                        scope.application.requestExit()
+                    else
+                        scope.requestFrame()
+                }
+            }
+        return 1
+    }
+
+    @Unsafe
+    private fun start(canvas: Canvas): Ptr<Unit> {
+        val gpu = canvas.gpuDevice() ?: throw GraphicsException("The UI Canvas requires Metal")
+        device = Some(gpu)
+        val registration = foreignCallback<(Ptr<Unit>) -> Int>(
+            { wake() },
+            0,
+            ForeignCallbackMode.Reusable
+        )
+        notify = Some(registration)
+        val p = gpu
+            .withNative { native ->
+                @Unsafe {
+                    return@withNative when (native) {
+                        case Metal(val d, val q) ->
+                            openPlayer(d, q, registration.function, registration.context)
+                        else -> None
+                    }
+                }
+            } ?:
+            throw GraphicsException("Could not open the AVPlayer source")
+        player = Some(p)
+        return p
+    }
+
+    public override fun onUnmount() {
+        @Unsafe {
+            try {
+                when (player) {
+                    case Some(val p) -> closePlayer(p)
+                    case None -> {}
+                }
+            } finally {
+                when (notify) {
+                    case Some(val r) -> releaseForeignCallback(r)
+                    case None -> {}
+                }
+                try {
+                    shader?.close()
+                } finally {
+                    device?.close()
+                }
+            }
+        }
+    }
+
+    public override fun measure(context: MeasureContext, constraints: Constraints): LayoutResult<
+        Unit
+    > = LayoutResult(LayoutMetrics(constraints.constrain(Size(960.0, 540.0))), Unit)
+
+    public override fun scene(context: SceneContext, measured: Unit) {
+        val extent = context.size
+        val controls = Rect(18.0, extent.height - 62.0, 44.0, 44.0)
+        context
+            .draw { paint ->
+                @Unsafe {
+                    val canvas = paint.canvas
+                    val p = player ?: start(canvas)
+                    val changed = beginFrame(p)
+                    val status = playerState(p)
+                    if (changed < 0 || status < 0) {
+                        throw GraphicsException("Could not obtain an NV12 frame")
+                    }
+                    if (changed > 0) {
+                        val planes = framePlanes(p)
+                        val next = bindFrame(device!!, program!!, planes)
+                        shader?.close()
+                        shader = Some(next)
+                        imageSize = Size(planes.y.width.toDouble(), planes.y.height.toDouble())
+                    }
+                    canvas.clear(Color.Black)
+                    when (shader) {
+                        case Some(val video) -> {
+                            val sx = extent.width / imageSize.width
+                            val sy = extent.height / imageSize.height
+                            val scale = if (sx < sy) sx else sy
+                            canvas
+                                .translate(
+                                    (extent.width - imageSize.width * scale) / 2.0,
+                                    (extent.height - imageSize.height * scale) / 2.0
+                                )
+                            canvas.scale(scale, scale)
+                            canvas
+                                .drawRect(
+                                    Rect(0.0, 0.0, imageSize.width, imageSize.height),
+                                    white,
+                                    Some(video)
+                                )
+                        }
+
+                        case None -> {}
+                    }
+                }
+            }
+        context.place(button!!, controls)
+        context
+            .draw { paint ->
+                @Unsafe {
+                    val canvas = paint.canvas
+                    val p = player!!
+                    canvas
+                        .drawRect(controls, Paint(Color(0.04, 0.07, 0.10, 0.85), antiAlias = false))
+                    val x = controls.x + 14.0
+                    val y = controls.y + 13.0
+                    if (playerState(p) == 1) {
+                        canvas.drawRect(Rect(x, y, 5.0, 18.0), white)
+                        canvas.drawRect(Rect(x + 10.0, y, 5.0, 18.0), white)
+                    } else {
+                        canvas
+                            .withState { child ->
+                                child.translate(x, y);
+                                child.drawPath(triangle!!, white)
+                            }
+                    }
+                    val width = extent.width - 96.0
+                    if (width > 0.0) {
+                        canvas
+                            .drawRect(
+                                Rect(76.0, controls.y + 20.0, width, 4.0),
+                                Paint(Color(0.1, 0.12, 0.14, 0.8), antiAlias = false)
+                            )
+                        canvas
+                            .drawRect(
+                                Rect(76.0, controls.y + 20.0, width * playerProgress(p), 4.0),
+                                white
+                            )
+                    }
+                }
+            }
+        context
+            .onFrameComplete { completion ->
+                @Unsafe {
+                    completeFrame(player!!, completion.submission == FrameSubmission.Accepted)
+                    val problem = foreignCallbackFailure(notify!!)
+                    when (problem) {
+                        case Some(val error) -> throw error
+                        case None -> {}
+                    }
+                }
+            }
+    }
+}
+
+fun main() {
+    val probe = arguments().size >= 3L
+    configureFpsReportingFromEnvironment()
+    val application = Application(applicationOptions { lastWindowPolicy = LastWindowPolicy.Exit })
+    UiHost(onRootError = { _, error -> throw error }) { host, active, event ->
+        when (event) {
+            case Resumed -> {
+                val scale = active.primaryMonitor()?.scaleFactor ?: 1.0
+                val window = active
+                    .createWindow(
+                        windowAttributes {
+                            title = "Scoop Video"
+                            resizable = !probe
+                            size = if (probe)
+                                LogicalSize(3840.0 / scale, 2160.0 / scale)
+                            else
+                                LogicalSize(960.0, 540.0)
+                        }
+                    )
+                if (probe) {
+                    val pixels = window.metrics!!.physicalSize
+                    if (pixels.width != 3840 || pixels.height != 2160)
+                        throw GraphicsException(
+                            "The measurement requires a 3840x2160 window backing"
+                        )
+                }
+                host.attach(window, { mount -> Player(probe, mount) })
+            }
+
+            case Window(_, WindowEvent.CloseRequested) -> active.requestExit()
+            else -> {}
+        }
+    }
+        .use { host -> application.run(host) }
+}

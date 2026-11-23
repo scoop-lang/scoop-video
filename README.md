@@ -1,4 +1,8 @@
-# AVPlayer 的 NV12 双平面直接绘制到 Skia
+# Scoop Video
+
+**[Scoop UI 播放器](ui/README.md)** 使用已安装的 Scoop UI、Surface 和 Graphics，把 AVPlayer 的 Y、UV 纹理作为两个子 shader 交给 UI Canvas。视频和播放控件在同一帧合成。运行 `make ui && ./build/scoop-video-ui artifacts/source-4k60.mp4`。实测数据和重录步骤见[实际 UI 验证](ui/README.md#4k60-实测)。
+
+## 独立 Skia 基线
 
 在 Apple M4 Pro 上，Scoop 随附的 Skia Ganesh 可以直接采样 AVPlayer 交付的 NV12 IOSurface。9 秒 4K60 素材的 540 个连续源帧各用一个 render pass 写入最终的 BGRA drawable。播放器进程内未观察到视频像素的 CPU 读回、上传、blit 或额外的 BGRA 转换。
 
@@ -28,7 +32,7 @@
 
 `AVPlayerItemVideoOutput` 请求带 IOSurface 且兼容 Metal 的 `420v`，关闭 AVPlayer 自身绘制。显示回调按播放器时钟取新帧。渲染线程通过 `CVMetalTextureCacheCreateTextureFromImage` 创建两个平面视图，用 `GrYUVABackendTextures(kY_UV, k420)` 和 `SkImages::TextureFromYUVATextures` 借用它们，由普通的 `SkCanvas::drawImage` 绘制。原始 `CVPixelBuffer` 和两个 `CVMetalTexture` 一起保留到 Skia 的 release proc。每帧异步提交，退出时统一等待 GPU。[播放器](src/main.mm) · [平面导入与绘制](src/Renderer.mm) · [Apple 平面映射与生命周期](https://developer.apple.com/documentation/corevideo/cvmetaltexturecachecreatetexturefromimage%28_%3A_%3A_%3A_%3A_%3A_%3A_%3A_%3A_%3A%29) · [固定版本的 Skia 接口](https://github.com/google/skia/blob/f326a1e25fc736704063922b9ce76b527b1c5efe/include/gpu/ganesh/SkImageGanesh.h#L243-L260)
 
-Scoop 当前的 `GpuDevice.importImage` 接收一个原生纹理。UI 若沿用这条已验证的路径，原生桥需要接收两个平面、视频颜色信息和共同的所有者，返回可交给 Canvas 的 `Image`。本实验的入口是独立 AppKit 窗口中的 Skia Canvas。[Scoop 当前导入接口](../scoop/sysroot/src/scoop.graphics/src/native/gpu_device.scoop#L57)
+这项基线的入口是独立 AppKit 窗口中的 Skia Canvas。后续的 Scoop UI 播放器分别对 Y 和 UV 调用现有的 `GpuDevice.importImage`，由 Canvas 着色器组合两个输入。[UI 实现](ui/src/video.scoop) · [Scoop 导入接口](../scoop/sysroot/src/scoop.graphics/src/native/gpu_device.scoop#L57)
 
 ## 复现
 

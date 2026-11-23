@@ -69,8 +69,16 @@ static kern_return_t observeIOLock(IOSurfaceRef s, IOSurfaceLockOptions options,
   return IOSurfaceLock(s, options, seed);
 }
 static void *observeIOBase(IOSurfaceRef s) {
-  if (videoSurface(s))
+  if (videoSurface(s)) {
     atomic_fetch_add(&ioBase, 1);
+    if (getenv("NV12_CPU_STACKS")) {
+      void *frames[10];
+      int count = backtrace(frames, 10);
+      fprintf(stderr, "whole-base surface=%u format=0x%08x\n",
+              IOSurfaceGetID(s), IOSurfaceGetPixelFormat(s));
+      backtrace_symbols_fd(frames, count, fileno(stderr));
+    }
+  }
   return IOSurfaceGetBaseAddress(s);
 }
 static void *observeIOPlane(IOSurfaceRef s, size_t plane) {
